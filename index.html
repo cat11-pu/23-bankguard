@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>bankguard 资源账本</title>
+<style>
+:root{--paper:#f7f4ec;--ink:#232019;--rule:#d8d0bf;--accent:#8c3a2b;--blue:#3d5a73;--soft:#efe9dc}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+     font:15px/1.6 Georgia,"Songti SC","Noto Serif CJK SC",serif}
+main{max-width:980px;margin:0 auto;padding:26px 22px 70px}
+h1{font-size:21px;letter-spacing:2px;margin:0 0 4px}
+h2{font-size:13px;letter-spacing:1px;color:var(--blue);margin:0 0 10px;
+   text-transform:none;border-bottom:1px solid var(--rule);padding-bottom:5px}
+.head{border-bottom:3px double var(--rule);padding-bottom:12px;margin-bottom:20px}
+.summary{margin:6px 0 0;font-family:ui-monospace,Consolas,monospace;font-size:13px;color:#5a5348}
+.block{margin:0 0 22px}
+.meter{display:flex;align-items:center;gap:10px;margin-bottom:7px}
+.meter .tag{width:62px;font-family:ui-monospace,monospace;font-size:13px;color:var(--blue)}
+.track{flex:1;display:flex;height:26px;border:1px solid var(--rule);background:#fffdf7}
+.seg{height:100%;display:flex;align-items:center;justify-content:center;
+     font-family:ui-monospace,monospace;font-size:12px;color:#fffdf7;overflow:hidden}
+.free{height:100%;display:flex;align-items:center;justify-content:center;
+      font-family:ui-monospace,monospace;font-size:12px;color:#8a8172;background:var(--soft)}
+.caption{width:290px;font-family:ui-monospace,monospace;font-size:12px;color:#5a5348}
+.caption b{color:var(--accent)}
+.sweep{display:flex;flex-wrap:wrap;align-items:stretch;gap:0}
+.step{border:1px solid var(--rule);background:#fffdf7;padding:6px 10px;font-size:12px;
+      font-family:ui-monospace,monospace;color:#3c3730}
+.step .who{color:var(--accent);font-weight:bold}
+.step .arrow{padding:6px 7px;color:#a89c86;font-size:12px;display:flex;align-items:center}
+.stuck{border:1px solid var(--accent);background:#f3e3df;color:var(--accent);
+       padding:6px 10px;font-family:ui-monospace,monospace;font-size:12px}
+table{width:100%;border-collapse:collapse;background:#fffdf7}
+th,td{text-align:left;padding:5px 9px;border-bottom:1px solid var(--rule);
+      font-family:ui-monospace,monospace;font-size:12.5px}
+th{background:var(--soft);color:var(--blue);font-weight:normal;letter-spacing:1px}
+td.ok{color:#3f6b4a}
+td.hold{color:var(--accent)}
+td.back{color:#8a4a12}
+.bench{border-top:3px double var(--rule);padding-top:14px;display:flex;flex-wrap:wrap;
+       align-items:center;gap:10px;font-family:ui-monospace,monospace;font-size:13px}
+select,input{font:inherit;font-family:ui-monospace,monospace;padding:3px 6px;
+             border:1px solid var(--rule);background:#fffdf7;color:var(--ink);width:70px}
+select{width:96px}
+button{font:inherit;font-family:ui-monospace,monospace;padding:4px 12px;border:1px solid var(--blue);
+       background:#fffdf7;color:var(--blue);cursor:pointer}
+button.go{background:var(--blue);color:#fffdf7}
+.note{font-size:12px;color:#8a8172;margin-top:8px}
+</style></head>
+<body>
+<main>
+  <div class="head">
+    <h1>资源账本 · 死锁避免</h1>
+    <p class="summary" id="summary">还没跑</p>
+  </div>
+  <section class="block">
+    <h2>库存尺：每类资源一段一格，格子是该进程占用的份数，末端是可用份数</h2>
+    <div id="meters"></div>
+    <p class="note" id="check"></p>
+  </section>
+  <section class="block">
+    <h2>安全扫掠条：最近一次审计或受理按进程号从小到大扫出来的做完顺序</h2>
+    <div class="sweep" id="sweep"></div>
+  </section>
+  <section class="block">
+    <h2>事件流水</h2>
+    <table id="ledger">
+      <thead><tr><th>序号</th><th>事件</th><th>结果</th><th>说明</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+  <section class="bench">
+    <h2 style="width:100%">记账台</h2>
+    <label>事件 <select id="kind">
+      <option value="request">申请</option>
+      <option value="release">释放</option>
+      <option value="finish">完结</option>
+      <option value="audit">审计</option>
+    </select></label>
+    <label>进程 <input id="pid" type="number" value="1" min="0" max="3"></label>
+    <label>A <input id="va" type="number" value="1" min="0"></label>
+    <label>B <input id="vb" type="number" value="0" min="0"></label>
+    <label>C <input id="vc" type="number" value="0" min="0"></label>
+    <button id="add" class="go">记一笔</button>
+    <button id="back">退回上一笔</button>
+  </section>
+</main>
+<script type="module">
+import { render } from "./app.js";
+
+const SAMPLE = {
+  "state": {
+    "resources": ["A", "B", "C"],
+    "total": [6, 4, 4],
+    "claim": [null, null, null, null],
+    "alloc": [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]],
+    "avail": [6, 4, 4],
+    "done": [false, false, false, false],
+    "grants": [],
+    "denials": [],
+    "releases": [],
+    "finishes": [],
+    "audits": [],
+    "granted": 0,
+    "denied": 0,
+    "released": 0,
+    "finished": 0,
+    "audited": 0
+  },
+  "events": [
+    { "kind": "declare", "pid": 0, "claim": [3, 2, 2] },
+    { "kind": "declare", "pid": 1, "claim": [3, 2, 2] },
+    { "kind": "declare", "pid": 2, "claim": [3, 2, 2] },
+    { "kind": "request", "pid": 0, "vec": [2, 1, 1] },
+    { "kind": "request", "pid": 1, "vec": [2, 1, 1] },
+    { "kind": "request", "pid": 2, "vec": [2, 1, 1] },
+    { "kind": "release", "pid": 0, "vec": [1, 1, 1] },
+    { "kind": "request", "pid": 2, "vec": [2, 1, 1] },
+    { "kind": "audit" },
+    { "kind": "request", "pid": 0, "vec": [2, 2, 2] },
+    { "kind": "release", "pid": 1, "vec": [1, 0, 0] },
+    { "kind": "request", "pid": 0, "vec": [2, 2, 2] },
+    { "kind": "request", "pid": 2, "vec": [1, 1, 1] },
+    { "kind": "finish", "pid": 0 },
+    { "kind": "finish", "pid": 2 },
+    { "kind": "audit" },
+    { "kind": "release", "pid": 2, "vec": [1, 1, 1] },
+    { "kind": "request", "pid": 1, "vec": [2, 1, 1] },
+    { "kind": "request", "pid": 2, "vec": [2, 2, 2] },
+    { "kind": "audit" },
+    { "kind": "release", "pid": 1, "vec": [1, 0, 0] },
+    { "kind": "release", "pid": 2, "vec": [3, 2, 2] },
+    { "kind": "finish", "pid": 2 },
+    { "kind": "request", "pid": 2, "vec": [1, 0, 0] },
+    { "kind": "audit" },
+    { "kind": "request", "pid": 1, "vec": [0, 1, 1] }
+  ]
+};
+
+const COLORS = ["#3d5a73", "#8c3a2b", "#5c6b3f", "#6b4a73"];
+
+let spec = JSON.parse(JSON.stringify(SAMPLE));
+
+function drawMeters(view) {
+  const box = document.getElementById("meters");
+  box.textContent = "";
+  view.resources.forEach(function (name, at) {
+    const total = view.total[at] || 1;
+    const row = document.createElement("div");
+    row.className = "meter";
+    const tag = document.createElement("div");
+    tag.className = "tag";
+    tag.textContent = name + " 类";
+    row.appendChild(tag);
+    const track = document.createElement("div");
+    track.className = "track";
+    let used = 0;
+    view.alloc.forEach(function (line, pid) {
+      const share = line[at];
+      if (share <= 0) { return; }
+      used += share;
+      const cell = document.createElement("div");
+      cell.className = "seg";
+      cell.style.width = (share * 100 / total) + "%";
+      cell.style.background = COLORS[pid % COLORS.length];
+      cell.textContent = "p" + pid + " " + share;
+      track.appendChild(cell);
+    });
+    const free = document.createElement("div");
+    free.className = "free";
+    free.style.width = ((view.avail[at] || 0) * 100 / total) + "%";
+    free.textContent = "可用 " + view.avail[at];
+    track.appendChild(free);
+    row.appendChild(track);
+    const cap = document.createElement("div");
+    cap.className = "caption";
+    const ok = used + view.avail[at] === view.total[at];
+    cap.innerHTML = "已分配 " + used + " + 可用 " + view.avail[at] + " = 总量 " + view.total[at] +
+                    (ok ? " 对账相符" : " <b>对不上</b>");
+    row.appendChild(cap);
+    box.appendChild(row);
+  });
+}
+
+function drawSweep(view) {
+  const box = document.getElementById("sweep");
+  box.textContent = "";
+  const last = view.last_sweep;
+  if (!last) {
+    box.textContent = "还没有可看的扫掠。";
+    return;
+  }
+  if (last[2] && last[2].length > 0) {
+    const bad = document.createElement("div");
+    bad.className = "stuck";
+    bad.textContent = "扫不动的进程：" + last[2].map(function (pid) { return "p" + pid; }).join(" ");
+    box.appendChild(bad);
+    return;
+  }
+  (last[1] || []).forEach(function (pid, spot) {
+    if (spot > 0) {
+      const arrow = document.createElement("div");
+      arrow.className = "arrow";
+      arrow.textContent = "→";
+      box.appendChild(arrow);
+    }
+    const step = document.createElement("div");
+    step.className = "step";
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = "p" + pid;
+    step.appendChild(who);
+    const need = view.need[pid];
+    const tail = document.createElement("span");
+    tail.textContent = need ? " 需求 " + JSON.stringify(need) + " 做完" : " 没声明，跳过";
+    step.appendChild(tail);
+    box.appendChild(step);
+  });
+  if ((last[1] || []).length === 0) {
+    box.textContent = "这一轮没有进程能做完。";
+  }
+}
+
+function drawLedger(view) {
+  const body = document.querySelector("#ledger tbody");
+  body.textContent = "";
+  view.log.forEach(function (row) {
+    const tr = document.createElement("tr");
+    [String(row[0]), row[1], row[2], row[3] || ""].forEach(function (text, at) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (at === 2) {
+        td.className = row[2] === "记账" ? "ok" : row[2] === "拒付" ? "hold" : "back";
+      }
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  });
+}
+
+function draw() {
+  const view = render(spec);
+  const avail = view.resources.map(function (_, at) { return view.avail[at]; }).join(" / ");
+  document.getElementById("summary").textContent =
+    "可用 A / B / C = " + avail + " ｜ 受理 " + view.granted + " 起 ｜ 拒付 " + view.denied +
+    " 起 ｜ 打回 " + view.failed_events + " 起 ｜ 释放 " + view.released + " 起 ｜ 完结 " +
+    view.finished + " 起 ｜ 审计 " + view.audited + " 次";
+  drawMeters(view);
+  drawSweep(view);
+  drawLedger(view);
+  const flags = ["守恒", "需求一致", "完结清零", "不超声明", "可用非负", "收尾安全"];
+  const values = [view.conserved, view.need_ok, view.done_zero, view.within_claim,
+                  view.avail_nonneg, view.safe_now];
+  document.getElementById("check").textContent =
+    flags.map(function (name, at) { return name + (values[at] ? " ✓" : " ✗"); }).join("　");
+}
+
+document.getElementById("add").addEventListener("click", function () {
+  const kind = document.getElementById("kind").value;
+  const pid = Number(document.getElementById("pid").value);
+  const vec = [Number(document.getElementById("va").value), Number(document.getElementById("vb").value),
+               Number(document.getElementById("vc").value)];
+  if (kind === "audit") {
+    spec.events.push({ kind: "audit" });
+  } else if (kind === "finish") {
+    spec.events.push({ kind: "finish", pid: pid });
+  } else {
+    spec.events.push({ kind: kind, pid: pid, vec: vec });
+  }
+  draw();
+});
+
+document.getElementById("back").addEventListener("click", function () {
+  spec.events.pop();
+  draw();
+});
+
+draw();
+</script>
+</body>
+</html>
